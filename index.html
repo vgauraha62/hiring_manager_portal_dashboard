@@ -1,0 +1,1205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hiring Manager Portal</title>
+    <script src="https://cdn.jsdelivr.net/npm/react@18/umd/react.development.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: {
+                            50: '#eff6ff',
+                            500: '#3b82f6',
+                            600: '#2563eb',
+                            700: '#1d4ed8',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+
+        // API Configuration
+        const API_BASE_URL = 'http://localhost:5000/api';
+        const SOCKET_URL = 'http://localhost:5000';
+
+        // API Service Class
+        class ApiService {
+            static token = null;
+
+            static setToken(token) {
+                this.token = token;
+                localStorage.setItem('authToken', token);
+            }
+
+            static getToken() {
+                if (!this.token) {
+                    this.token = localStorage.getItem('authToken');
+                }
+                return this.token;
+            }
+
+            static clearToken() {
+                this.token = null;
+                localStorage.removeItem('authToken');
+            }
+
+            static async request(endpoint, options = {}) {
+                const token = this.getToken();
+                const headers = {
+                    'Content-Type': 'application/json',
+                    ...options.headers,
+                };
+
+                if (token) {
+                    headers.Authorization = `Bearer ${token}`;
+                }
+
+                try {
+                    const response = await fetch(`${API_BASE_URL}${endpoint}`, {
+                        ...options,
+                        headers,
+                    });
+
+                    if (!response.ok) {
+                        const error = await response.json();
+                        throw new Error(error.error || 'Request failed');
+                    }
+
+                    return response.json();
+                } catch (error) {
+                    console.error('API Error:', error);
+                    throw error;
+                }
+            }
+
+            static async login(email, password) {
+                const response = await this.request('/login', {
+                    method: 'POST',
+                    body: JSON.stringify({ email, password }),
+                });
+                this.setToken(response.token);
+                return response;
+            }
+
+            static async submitProject(projectData) {
+                return this.request('/projects', {
+                    method: 'POST',
+                    body: JSON.stringify(projectData),
+                });
+            }
+
+            static async getProjects() {
+                return this.request('/projects');
+            }
+
+            static async saveProject(projectId) {
+                return this.request('/saved-projects', {
+                    method: 'POST',
+                    body: JSON.stringify({ projectId }),
+                });
+            }
+
+            static async getSavedProjects() {
+                return this.request('/saved-projects');
+            }
+
+            static async getMessages(projectId) {
+                return this.request(`/messages/${projectId}`);
+            }
+        }
+
+        // Socket Service Class
+        class SocketService {
+            static socket = null;
+
+            static connect() {
+                if (!this.socket) {
+                    this.socket = io(SOCKET_URL);
+                }
+                return this.socket;
+            }
+
+            static disconnect() {
+                if (this.socket) {
+                    this.socket.disconnect();
+                    this.socket = null;
+                }
+            }
+
+            static joinProject(projectId) {
+                if (this.socket) {
+                    this.socket.emit('joinProject', projectId);
+                }
+            }
+
+            static sendMessage(projectId, message, senderId) {
+                if (this.socket) {
+                    this.socket.emit('sendMessage', { projectId, message, senderId });
+                }
+            }
+
+            static onNewMessage(callback) {
+                if (this.socket) {
+                    this.socket.on('newMessage', callback);
+                }
+            }
+
+            static offNewMessage() {
+                if (this.socket) {
+                    this.socket.off('newMessage');
+                }
+            }
+        }
+
+        // Constants
+        const INDUSTRY_ROLES = [
+            'Software Development',
+            'Data Science', 
+            'Design',
+            'Marketing',
+            'Finance',
+            'Other'
+        ];
+
+        // User state
+        let currentUser = null;
+
+        // Utility functions for fallback localStorage support
+        const getStoredData = (key, defaultValue = []) => {
+            try {
+                const stored = localStorage.getItem(key);
+                return stored ? JSON.parse(stored) : defaultValue;
+            } catch {
+                return defaultValue;
+            }
+        };
+
+        const setStoredData = (key, data) => {
+            localStorage.setItem(key, JSON.stringify(data));
+        };
+
+        const Navigation = ({ currentView, setCurrentView, user, setUser }) => {
+            const handleLogout = () => {
+                ApiService.clearToken();
+                SocketService.disconnect();
+                setUser(null);
+                currentUser = null;
+                setCurrentView('home');
+            };
+
+            return (
+                <nav className="bg-white shadow-lg border-b border-gray-200">
+                    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                        <div className="flex justify-between h-16">
+                            <div className="flex items-center">
+                                <button
+                                    onClick={() => setCurrentView('home')}
+                                    className="text-xl font-bold text-primary-700 hover:text-primary-600 transition-colors"
+                                >
+                                    HirePortal
+                                </button>
+                            </div>
+                            <div className="flex items-center space-x-8">
+                                <button
+                                    onClick={() => setCurrentView('home')}
+                                    className={`px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+                                        currentView === 'home' 
+                                            ? 'text-primary-700 bg-primary-50' 
+                                            : 'text-gray-700 hover:text-primary-600'
+                                    }`}
+                                >
+                                    Home
+                                </button>
+                                <button
+                                    onClick={() => setCurrentView('submit')}
+                                    className={`px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+                                        currentView === 'submit' 
+                                            ? 'text-primary-700 bg-primary-50' 
+                                            : 'text-gray-700 hover:text-primary-600'
+                                    }`}
+                                >
+                                    Submit Project
+                                </button>
+                                {!user ? (
+                                    <button
+                                        onClick={() => setCurrentView('login')}
+                                        className={`px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+                                            currentView === 'login' 
+                                                ? 'text-primary-700 bg-primary-50' 
+                                                : 'text-gray-700 hover:text-primary-600'
+                                        }`}
+                                    >
+                                        Hiring Manager Login
+                                    </button>
+                                ) : (
+                                    <div className="flex items-center space-x-4">
+                                        {user.role === 'manager' && (
+                                            <button
+                                                onClick={() => setCurrentView('dashboard')}
+                                                className={`px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+                                                    currentView === 'dashboard' 
+                                                        ? 'text-primary-700 bg-primary-50' 
+                                                        : 'text-gray-700 hover:text-primary-600'
+                                                }`}
+                                            >
+                                                Dashboard
+                                            </button>
+                                        )}
+                                        <span className="text-sm text-gray-600">
+                                            {user.email} ({user.role})
+                                        </span>
+                                        <button
+                                            onClick={handleLogout}
+                                            className="px-3 py-2 rounded-md text-sm font-medium text-red-600 hover:text-red-700 transition-colors"
+                                        >
+                                            Logout
+                                        </button>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                </nav>
+            );
+        };
+
+        // Homepage Component
+        const Homepage = ({ setCurrentView }) => {
+            return (
+                <div className="min-h-screen bg-gradient-to-br from-primary-50 to-white">
+                    {/* Hero Section */}
+                    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-20 pb-16">
+                        <div className="text-center">
+                            <h1 className="text-4xl md:text-6xl font-bold text-gray-900 mb-6">
+                                Showcase Your Projects to
+                                <span className="text-primary-600"> Top Hiring Managers</span>
+                            </h1>
+                            <p className="text-xl text-gray-600 mb-8 max-w-3xl mx-auto">
+                                Connect with industry leaders across various sectors. Submit your best work 
+                                and get discovered by hiring managers looking for exceptional talent.
+                            </p>
+                            <button
+                                onClick={() => setCurrentView('submit')}
+                                className="bg-primary-600 text-white px-8 py-4 rounded-lg text-lg font-semibold hover:bg-primary-700 transform hover:scale-105 transition-all duration-200 shadow-lg"
+                            >
+                                Submit Your Project
+                            </button>
+                        </div>
+                    </div>
+
+                    {/* Features Section */}
+                    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-16">
+                        <div className="grid md:grid-cols-3 gap-8">
+                            <div className="text-center p-6 bg-white rounded-lg shadow-md">
+                                <div className="w-16 h-16 bg-primary-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                                    <svg className="w-8 h-8 text-primary-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                                    </svg>
+                                </div>
+                                <h3 className="text-xl font-semibold mb-2">Easy Submission</h3>
+                                <p className="text-gray-600">Simple form to showcase your best projects with detailed descriptions and links.</p>
+                            </div>
+                            <div className="text-center p-6 bg-white rounded-lg shadow-md">
+                                <div className="w-16 h-16 bg-primary-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                                    <svg className="w-8 h-8 text-primary-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
+                                    </svg>
+                                </div>
+                                <h3 className="text-xl font-semibold mb-2">Industry Experts</h3>
+                                <p className="text-gray-600">Connect with hiring managers from top companies across multiple industries.</p>
+                            </div>
+                            <div className="text-center p-6 bg-white rounded-lg shadow-md">
+                                <div className="w-16 h-16 bg-primary-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                                    <svg className="w-8 h-8 text-primary-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                                    </svg>
+                                </div>
+                                <h3 className="text-xl font-semibold mb-2">Direct Communication</h3>
+                                <p className="text-gray-600">Chat directly with interested hiring managers about your projects and opportunities.</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const ProjectSubmissionForm = ({ setCurrentView }) => {
+            const [formData, setFormData] = useState({
+                fullName: '',
+                email: '',
+                industryRole: '',
+                projectTitle: '',
+                projectDescription: '',
+                projectLink: '',
+                githubLink: ''
+            });
+            const [errors, setErrors] = useState({});
+            const [isSubmitting, setIsSubmitting] = useState(false);
+            const [showSuccess, setShowSuccess] = useState(false);
+
+            const validateForm = () => {
+                const newErrors = {};
+                
+                if (!formData.fullName.trim()) newErrors.fullName = 'Full name is required';
+                if (!formData.email.trim()) {
+                    newErrors.email = 'Email is required';
+                } else if (!/\S+@\S+\.\S+/.test(formData.email)) {
+                    newErrors.email = 'Email is invalid';
+                }
+                if (!formData.industryRole) newErrors.industryRole = 'Industry role is required';
+                if (!formData.projectTitle.trim()) newErrors.projectTitle = 'Project title is required';
+                if (!formData.projectDescription.trim()) {
+                    newErrors.projectDescription = 'Project description is required';
+                } else if (formData.projectDescription.length > 500) {
+                    newErrors.projectDescription = 'Description must be 500 words or less';
+                }
+                if (!formData.projectLink.trim()) newErrors.projectLink = 'Project link is required';
+
+                setErrors(newErrors);
+                return Object.keys(newErrors).length === 0;
+            };
+
+            const handleSubmit = async () => {
+                if (!validateForm()) return;
+
+                setIsSubmitting(true);
+                
+                try {
+                    await ApiService.submitProject(formData);
+                    setShowSuccess(true);
+                    setFormData({
+                        fullName: '',
+                        email: '',
+                        industryRole: '',
+                        projectTitle: '',
+                        projectDescription: '',
+                        projectLink: '',
+                        githubLink: ''
+                    });
+                } catch (error) {
+                    console.error('Submission error:', error);
+                    setErrors({ general: 'Failed to submit project. Please try again.' });
+                } finally {
+                    setIsSubmitting(false);
+                }
+            };
+
+            const handleInputChange = (field, value) => {
+                setFormData(prev => ({ ...prev, [field]: value }));
+                if (errors[field]) {
+                    setErrors(prev => ({ ...prev, [field]: '' }));
+                }
+            };
+
+            // Rest of the component remains the same...
+            if (showSuccess) {
+                return (
+                    <div className="min-h-screen bg-gray-50 flex items-center justify-center px-4">
+                        <div className="max-w-md w-full bg-white rounded-lg shadow-lg p-8 text-center">
+                            <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                                <svg className="w-8 h-8 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                                </svg>
+                            </div>
+                            <h2 className="text-2xl font-bold text-gray-900 mb-4">Project Submitted Successfully!</h2>
+                            <p className="text-gray-600 mb-6">Hiring managers will review your submission and reach out if interested.</p>
+                            <button
+                                onClick={() => {
+                                    setShowSuccess(false);
+                                    setCurrentView('home');
+                                }}
+                                className="bg-primary-600 text-white px-6 py-2 rounded-lg hover:bg-primary-700 transition-colors"
+                            >
+                                Back to Home
+                            </button>
+                        </div>
+                    </div>
+                );
+            }
+
+            return (
+                <div className="min-h-screen bg-gray-50 py-12 px-4">
+                    <div className="max-w-2xl mx-auto">
+                        <div className="bg-white rounded-lg shadow-lg p-8">
+                            <h1 className="text-3xl font-bold text-gray-900 mb-8 text-center">Submit Your Project</h1>
+                            
+                            {errors.general && (
+                                <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-6">
+                                    {errors.general}
+                                </div>
+                            )}
+
+                            <div className="space-y-6">
+                                {/* Form fields remain the same... */}
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                                        Full Name *
+                                    </label>
+                                    <input
+                                        type="text"
+                                        value={formData.fullName}
+                                        onChange={(e) => handleInputChange('fullName', e.target.value)}
+                                        className={`w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 ${
+                                            errors.fullName ? 'border-red-500' : 'border-gray-300'
+                                        }`}
+                                        placeholder="Enter your full name"
+                                    />
+                                    {errors.fullName && <p className="text-red-500 text-sm mt-1">{errors.fullName}</p>}
+                                </div>
+
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                                        Email *
+                                    </label>
+                                    <input
+                                        type="email"
+                                        value={formData.email}
+                                        onChange={(e) => handleInputChange('email', e.target.value)}
+                                        className={`w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 ${
+                                            errors.email ? 'border-red-500' : 'border-gray-300'
+                                        }`}
+                                        placeholder="Enter your email"
+                                    />
+                                    {errors.email && <p className="text-red-500 text-sm mt-1">{errors.email}</p>}
+                                </div>
+
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                                        Industry Role *
+                                    </label>
+                                    <select
+                                        value={formData.industryRole}
+                                        onChange={(e) => handleInputChange('industryRole', e.target.value)}
+                                        className={`w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 ${
+                                            errors.industryRole ? 'border-red-500' : 'border-gray-300'
+                                        }`}
+                                    >
+                                        <option value="">Select your industry role</option>
+                                        {INDUSTRY_ROLES.map(role => (
+                                            <option key={role} value={role}>{role}</option>
+                                        ))}
+                                    </select>
+                                    {errors.industryRole && <p className="text-red-500 text-sm mt-1">{errors.industryRole}</p>}
+                                </div>
+
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                                        Project Title *
+                                    </label>
+                                    <input
+                                        type="text"
+                                        value={formData.projectTitle}
+                                        onChange={(e) => handleInputChange('projectTitle', e.target.value)}
+                                        className={`w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 ${
+                                            errors.projectTitle ? 'border-red-500' : 'border-gray-300'
+                                        }`}
+                                        placeholder="Enter your project title"
+                                    />
+                                    {errors.projectTitle && <p className="text-red-500 text-sm mt-1">{errors.projectTitle}</p>}
+                                </div>
+
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                                        Project Description * (Max 500 words)
+                                    </label>
+                                    <textarea
+                                        value={formData.projectDescription}
+                                        onChange={(e) => handleInputChange('projectDescription', e.target.value)}
+                                        rows={6}
+                                        className={`w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 ${
+                                            errors.projectDescription ? 'border-red-500' : 'border-gray-300'
+                                        }`}
+                                        placeholder="Describe your project in detail..."
+                                    />
+                                    <div className="flex justify-between items-center mt-1">
+                                        {errors.projectDescription && <p className="text-red-500 text-sm">{errors.projectDescription}</p>}
+                                        <p className="text-sm text-gray-500 ml-auto">{formData.projectDescription.length}/500</p>
+                                    </div>
+                                </div>
+
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                                        Project Link/URL *
+                                    </label>
+                                    <input
+                                        type="url"
+                                        value={formData.projectLink}
+                                        onChange={(e) => handleInputChange('projectLink', e.target.value)}
+                                        className={`w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 ${
+                                            errors.projectLink ? 'border-red-500' : 'border-gray-300'
+                                        }`}
+                                        placeholder="https://your-project-link.com"
+                                    />
+                                    {errors.projectLink && <p className="text-red-500 text-sm mt-1">{errors.projectLink}</p>}
+                                </div>
+
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                                        GitHub/Portfolio Link (Optional)
+                                    </label>
+                                    <input
+                                        type="url"
+                                        value={formData.githubLink}
+                                        onChange={(e) => handleInputChange('githubLink', e.target.value)}
+                                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+                                        placeholder="https://github.com/yourusername or portfolio link"
+                                    />
+                                </div>
+
+                                <button
+                                    onClick={handleSubmit}
+                                    disabled={isSubmitting}
+                                    className="w-full bg-primary-600 text-white py-3 rounded-lg font-semibold hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                                >
+                                    {isSubmitting ? 'Submitting...' : 'Submit Project'}
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const HiringManagerLogin = ({ setCurrentView, setUser }) => {
+            const [formData, setFormData] = useState({ email: '', password: '' });
+            const [errors, setErrors] = useState({});
+            const [isLoading, setIsLoading] = useState(false);
+
+            const validateForm = () => {
+                const newErrors = {};
+                
+                if (!formData.email.trim()) {
+                    newErrors.email = 'Email is required';
+                } else if (!/\S+@\S+\.\S+/.test(formData.email)) {
+                    newErrors.email = 'Email is invalid';
+                }
+                
+                if (!formData.password) {
+                    newErrors.password = 'Password is required';
+                } else if (formData.password.length < 8) {
+                    newErrors.password = 'Password must be at least 8 characters';
+                }
+
+                setErrors(newErrors);
+                return Object.keys(newErrors).length === 0;
+            };
+
+            const handleLogin = async () => {
+                if (!validateForm()) return;
+
+                setIsLoading(true);
+                
+                try {
+                    const response = await ApiService.login(formData.email, formData.password);
+                    setUser(response.user);
+                    currentUser = response.user;
+                    SocketService.connect();
+                    setCurrentView('dashboard');
+                } catch (error) {
+                    setErrors({ general: 'Invalid email or password' });
+                } finally {
+                    setIsLoading(false);
+                }
+            };
+
+            const handleInputChange = (field, value) => {
+                setFormData(prev => ({ ...prev, [field]: value }));
+                if (errors[field] || errors.general) {
+                    setErrors(prev => ({ ...prev, [field]: '', general: '' }));
+                }
+            };
+
+            return (
+                <div className="min-h-screen bg-gray-50 flex items-center justify-center px-4">
+                    <div className="max-w-md w-full bg-white rounded-lg shadow-lg p-8">
+                        <h1 className="text-3xl font-bold text-gray-900 mb-8 text-center">Hiring Manager Login</h1>
+                        
+                        {errors.general && (
+                            <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-6">
+                                {errors.general}
+                            </div>
+                        )}
+
+                        <div className="space-y-6">
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-2">
+                                    Email
+                                </label>
+                                <input
+                                    type="email"
+                                    value={formData.email}
+                                    onChange={(e) => handleInputChange('email', e.target.value)}
+                                    className={`w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 ${
+                                        errors.email ? 'border-red-500' : 'border-gray-300'
+                                    }`}
+                                    placeholder="Enter your email"
+                                />
+                                {errors.email && <p className="text-red-500 text-sm mt-1">{errors.email}</p>}
+                            </div>
+
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-2">
+                                    Password
+                                </label>
+                                <input
+                                    type="password"
+                                    value={formData.password}
+                                    onChange={(e) => handleInputChange('password', e.target.value)}
+                                    className={`w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 ${
+                                        errors.password ? 'border-red-500' : 'border-gray-300'
+                                    }`}
+                                    placeholder="Enter your password"
+                                />
+                                {errors.password && <p className="text-red-500 text-sm mt-1">{errors.password}</p>}
+                            </div>
+
+                            <button
+                                onClick={handleLogin}
+                                disabled={isLoading}
+                                className="w-full bg-primary-600 text-white py-3 rounded-lg font-semibold hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                            >
+                                {isLoading ? 'Logging in...' : 'Login'}
+                            </button>
+                        </div>
+
+                        <div className="mt-8 p-4 bg-gray-50 rounded-lg">
+                            <p className="text-sm text-gray-600 mb-2">Demo Credentials:</p>
+                            <p className="text-sm font-mono text-gray-800">Email: manager@example.com</p>
+                            <p className="text-sm font-mono text-gray-800">Password: Hiring2025</p>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        // Dashboard Component
+        const Dashboard = ({ user, setCurrentView, setSelectedProject, setActiveChat }) => {
+            const [projects, setProjects] = useState([]);
+            const [savedProjects, setSavedProjects] = useState([]);
+            const [activeTab, setActiveTab] = useState('all');
+            const [loading, setLoading] = useState(true);
+
+            useEffect(() => {
+                loadData();
+            }, []);
+
+            const loadData = async () => {
+                try {
+                    const [projectsData, savedData] = await Promise.all([
+                        ApiService.getProjects(),
+                        ApiService.getSavedProjects()
+                    ]);
+                    setProjects(projectsData);
+                    setSavedProjects(savedData);
+                } catch (error) {
+                    console.error('Failed to load data:', error);
+                    // Fallback to localStorage for demo
+                    const submissions = getStoredData('projectSubmissions', []);
+                    const saved = getStoredData('savedProjects', []);
+                    setProjects(submissions);
+                    setSavedProjects(saved);
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            const handleAddToList = async (project) => {
+                try {
+                    await ApiService.saveProject(project.id);
+                    setSavedProjects(prev => [...prev, project]);
+                    setProjects(prev => prev.filter(p => p.id !== project.id));
+                } catch (error) {
+                    console.error('Failed to save project:', error);
+                    // Fallback to localStorage
+                    const updatedSaved = [...savedProjects, project];
+                    setSavedProjects(updatedSaved);
+                    setStoredData('savedProjects', updatedSaved);
+                    
+                    const updatedProjects = projects.filter(p => p.id !== project.id);
+                    setProjects(updatedProjects);
+                    setStoredData('projectSubmissions', updatedProjects);
+                }
+            };
+
+            const handleViewDetails = (project) => {
+                setSelectedProject(project);
+                setCurrentView('details');
+            };
+
+            const filteredProjects = activeTab === 'all' 
+                ? projects 
+                : projects.filter(p => p.industryRole === activeTab);
+
+            const newSubmissionsCount = projects.filter(p => p.isNew).length;
+
+            const ProjectCard = ({ project, showAddButton = true }) => (
+                <div className="bg-white rounded-lg shadow-md p-6 hover:shadow-lg transition-shadow">
+                    <div className="flex justify-between items-start mb-4">
+                        <h3 className="text-lg font-semibold text-gray-900">{project.projectTitle}</h3>
+                        {project.isNew && (
+                            <span className="bg-red-100 text-red-800 text-xs font-medium px-2.5 py-0.5 rounded-full">
+                                New
+                            </span>
+                        )}
+                    </div>
+                    <p className="text-gray-600 mb-2">
+                        <strong>Candidate:</strong> {project.fullName}
+                    </p>
+                    <p className="text-gray-600 mb-2">
+                        <strong>Industry:</strong> {project.industryRole}
+                    </p>
+                    <p className="text-gray-600 mb-4">
+                        <strong>Submitted:</strong> {new Date(project.submissionDate).toLocaleDateString()}
+                    </p>
+                    <p className="text-gray-700 mb-4">
+                        {project.projectDescription.length > 100 
+                            ? `${project.projectDescription.substring(0, 100)}...` 
+                            : project.projectDescription}
+                    </p>
+                    <div className="flex space-x-3">
+                        <button
+                            onClick={() => handleViewDetails(project)}
+                            className="bg-primary-600 text-white px-4 py-2 rounded-lg text-sm hover:bg-primary-700 transition-colors"
+                        >
+                            View Details
+                        </button>
+                        {showAddButton && (
+                            <button
+                                onClick={() => handleAddToList(project)}
+                                className="bg-green-600 text-white px-4 py-2 rounded-lg text-sm hover:bg-green-700 transition-colors"
+                            >
+                                Add to My List
+                            </button>
+                        )}
+                    </div>
+                </div>
+            );
+
+    if (loading) {
+        return (
+            <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+                <div className="text-center">
+                    <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-primary-600 mx-auto"></div>
+                    <p className="mt-4 text-gray-600">Loading dashboard...</p>
+                </div>
+            </div>
+        );
+    }
+
+    return (
+        <div className="min-h-screen bg-gray-50 py-8 px-4">
+            <div className="max-w-7xl mx-auto">
+                <div className="flex justify-between items-center mb-8">
+                    <h1 className="text-3xl font-bold text-gray-900">Hiring Manager Dashboard</h1>
+                    {newSubmissionsCount > 0 && (
+                        <div className="bg-red-100 text-red-800 px-4 py-2 rounded-lg">
+                            <span className="font-semibold">{newSubmissionsCount}</span> new submission{newSubmissionsCount !== 1 ? 's' : ''}
+                        </div>
+                    )}
+                </div>
+
+                <div className="mb-8">
+                    <div className="border-b border-gray-200">
+                        <nav className="-mb-px flex space-x-8">
+                            <button
+                                onClick={() => setActiveTab('all')}
+                                className={`py-2 px-1 border-b-2 font-medium text-sm ${
+                                    activeTab === 'all'
+                                        ? 'border-primary-500 text-primary-600'
+                                        : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                                }`}
+                            >
+                                All Submissions ({projects.length})
+                            </button>
+                            {INDUSTRY_ROLES.map(role => {
+                                const count = projects.filter(p => p.industryRole === role).length;
+                                if (count === 0) return null;
+                                return (
+                                    <button
+                                        key={role}
+                                        onClick={() => setActiveTab(role)}
+                                        className={`py-2 px-1 border-b-2 font-medium text-sm ${
+                                            activeTab === role
+                                                ? 'border-primary-500 text-primary-600'
+                                                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                                        }`}
+                                    >
+                                        {role} ({count})
+                                    </button>
+                                );
+                            })}
+                        </nav>
+                    </div>
+                </div>
+
+                <div className="mb-12">
+                    <h2 className="text-2xl font-bold text-gray-900 mb-6">New Project Submissions</h2>
+                    {filteredProjects.length === 0 ? (
+                        <div className="text-center py-12">
+                            <p className="text-gray-500 text-lg">No new submissions in this category.</p>
+                        </div>
+                    ) : (
+                        <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
+                            {filteredProjects.map(project => (
+                                <ProjectCard key={project.id} project={project} />
+                            ))}
+                        </div>
+                    )}
+                </div>
+
+                <div>
+                    <h2 className="text-2xl font-bold text-gray-900 mb-6">Saved Projects</h2>
+                    {savedProjects.length === 0 ? (
+                        <div className="text-center py-12">
+                            <p className="text-gray-500 text-lg">No saved projects yet.</p>
+                        </div>
+                    ) : (
+                        <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
+                            {savedProjects.map(project => (
+                                <ProjectCard key={project.id} project={project} showAddButton={false} />
+                            ))}
+                        </div>
+                    )}
+                </div>
+            </div>
+        </div>
+    );
+};
+
+        // Chat Component
+        const Chat = ({ project, user, setCurrentView }) => {
+    const [messages, setMessages] = useState([]);
+    const [newMessage, setNewMessage] = useState('');
+    const [loading, setLoading] = useState(true);
+    const messagesEndRef = useRef(null);
+
+    useEffect(() => {
+        loadMessages();
+        setupSocket();
+
+        return () => {
+            SocketService.offNewMessage();
+        };
+    }, [project.id]);
+
+    useEffect(() => {
+        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }, [messages]);
+
+    const loadMessages = async () => {
+        try {
+            const messagesData = await ApiService.getMessages(project.id);
+            setMessages(messagesData);
+        } catch (error) {
+            console.error('Failed to load messages:', error);
+            // Fallback to localStorage
+            const chatKey = `chat_${project.id}`;
+            const existingChat = getStoredData(chatKey, []);
+            
+            if (existingChat.length === 0) {
+                const initialMessages = [
+                    {
+                        id: 1,
+                        sender: 'manager',
+                        senderId: { role: 'manager' },
+                        message: `Hi ${project.fullName}! I'm interested in your project "${project.projectTitle}". Could you tell me more about the technical challenges you faced?`,
+                        timestamp: new Date().toISOString()
+                    },
+                    {
+                        id: 2,
+                        sender: 'candidate',
+                        senderId: { role: 'candidate' },
+                        message: `Hello! Thank you for your interest. The main challenge was implementing real-time data synchronization across multiple devices. I solved it using WebSocket connections and a custom state management system.`,
+                        timestamp: new Date(Date.now() + 300000).toISOString()
+                    }
+                ];
+                setMessages(initialMessages);
+                setStoredData(chatKey, initialMessages);
+            } else {
+                setMessages(existingChat);
+            }
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const setupSocket = () => {
+        SocketService.joinProject(project.id);
+        SocketService.onNewMessage((message) => {
+            setMessages(prev => [...prev, message]);
+        });
+    };
+
+    const handleSendMessage = () => {
+        if (!newMessage.trim()) return;
+
+        if (SocketService.socket) {
+            SocketService.sendMessage(project.id, newMessage, user.id);
+        } else {
+            // Fallback to localStorage
+            const message = {
+                id: Date.now(),
+                sender: 'manager',
+                senderId: { role: 'manager' },
+                message: newMessage,
+                timestamp: new Date().toISOString()
+            };
+
+            const updatedMessages = [...messages, message];
+            setMessages(updatedMessages);
+            
+            const chatKey = `chat_${project.id}`;
+            setStoredData(chatKey, updatedMessages);
+            
+            // Simulate candidate response
+            setTimeout(() => {
+                const candidateResponse = {
+                    id: Date.now() + 1,
+                    sender: 'candidate',
+                    senderId: { role: 'candidate' },
+                    message: 'Thanks for your question! I\'d be happy to discuss this further. When would be a good time for a call?',
+                    timestamp: new Date().toISOString()
+                };
+                
+                const finalMessages = [...updatedMessages, candidateResponse];
+                setMessages(finalMessages);
+                setStoredData(chatKey, finalMessages);
+            }, 2000);
+        }
+        
+        setNewMessage('');
+    };
+
+    const formatTime = (timestamp) => {
+        return new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    };
+
+    if (loading) {
+        return (
+            <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+                <div className="text-center">
+                    <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-primary-600 mx-auto"></div>
+                    <p className="mt-4 text-gray-600">Loading chat...</p>
+                </div>
+            </div>
+        );
+    }
+
+    return (
+        <div className="min-h-screen bg-gray-50 flex flex-col">
+            <div className="bg-white shadow-sm border-b px-6 py-4">
+                <div className="flex items-center justify-between">
+                    <div className="flex items-center">
+                        <button
+                            onClick={() => setCurrentView('dashboard')}
+                            className="text-primary-600 hover:text-primary-700 mr-4"
+                        >
+                            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                            </svg>
+                        </button>
+                        <div>
+                            <h2 className="text-lg font-semibold text-gray-900">{project.fullName}</h2>
+                            <p className="text-sm text-gray-600">{project.projectTitle}</p>
+                        </div>
+                    </div>
+                    <div className="flex items-center space-x-2">
+                        <div className="w-3 h-3 bg-green-400 rounded-full"></div>
+                        <span className="text-sm text-gray-600">Online</span>
+                    </div>
+                </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-6">
+                <div className="max-w-4xl mx-auto space-y-4">
+                    {messages.map(message => (
+                        <div
+                            key={message.id}
+                            className={`flex ${(message.senderId?.role || message.sender) === 'manager' ? 'justify-end' : 'justify-start'}`}
+                        >
+                            <div
+                                className={`max-w-xs lg:max-w-md px-4 py-2 rounded-lg ${
+                                    (message.senderId?.role || message.sender) === 'manager'
+                                        ? 'bg-primary-600 text-white'
+                                        : 'bg-white text-gray-900 shadow-sm'
+                                }`}
+                            >
+                                <p className="text-sm">{message.message}</p>
+                                <p className={`text-xs mt-1 ${
+                                    (message.senderId?.role || message.sender) === 'manager' ? 'text-primary-100' : 'text-gray-500'
+                                }`}>
+                                    {formatTime(message.timestamp)}
+                                </p>
+                            </div>
+                        </div>
+                    ))}
+                    <div ref={messagesEndRef} />
+                </div>
+            </div>
+
+            <div className="bg-white border-t px-6 py-4">
+                <div className="max-w-4xl mx-auto flex space-x-4">
+                    <input
+                        type="text"
+                        value={newMessage}
+                        onChange={(e) => setNewMessage(e.target.value)}
+                        onKeyPress={(e) => e.key === 'Enter' && handleSendMessage()}
+                        placeholder="Type your message..."
+                        className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+                    />
+                    <button
+                        onClick={handleSendMessage}
+                        disabled={!newMessage.trim()}
+                        className="bg-primary-600 text-white px-6 py-2 rounded-lg hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                    >
+                        Send
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+        // Footer Component
+        const Footer = () => {
+            return (
+                <footer className="bg-gray-900 text-white py-12">
+                    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                        <div className="grid md:grid-cols-3 gap-8">
+                            <div>
+                                <h3 className="text-lg font-semibold mb-4">HirePortal</h3>
+                                <p className="text-gray-400">
+                                    Connecting talented professionals with top hiring managers across industries.
+                                </p>
+                            </div>
+                            <div>
+                                <h4 className="text-md font-semibold mb-4">Quick Links</h4>
+                                <ul className="space-y-2 text-gray-400">
+                                    <li><a href="#" className="hover:text-white transition-colors">About</a></li>
+                                    <li><a href="#" className="hover:text-white transition-colors">Contact</a></li>
+                                    <li><a href="#" className="hover:text-white transition-colors">Terms of Service</a></li>
+                                </ul>
+                            </div>
+                            <div>
+                                <h4 className="text-md font-semibold mb-4">Support</h4>
+                                <ul className="space-y-2 text-gray-400">
+                                    <li><a href="#" className="hover:text-white transition-colors">Help Center</a></li>
+                                    <li><a href="#" className="hover:text-white transition-colors">Privacy Policy</a></li>
+                                    <li><a href="#" className="hover:text-white transition-colors">FAQ</a></li>
+                                </ul>
+                            </div>
+                        </div>
+                        <div className="border-t border-gray-800 mt-8 pt-8 text-center text-gray-400">
+                            <p>&copy; 2025 HirePortal. All rights reserved.</p>
+                        </div>
+                    </div>
+                </footer>
+            );
+        };
+
+        const App = () => {
+            const [currentView, setCurrentView] = useState('home');
+            const [user, setUser] = useState(null);
+            const [selectedProject, setSelectedProject] = useState(null);
+            const [activeChat, setActiveChat] = useState(null);
+
+            useEffect(() => {
+                // Check if user is already logged in
+                const token = ApiService.getToken();
+                if (token) {
+                    // In a real app, you'd verify the token with the server
+                    // For demo purposes, we'll assume it's valid and connect socket
+                    SocketService.connect();
+                }
+            }, []);
+
+            const renderCurrentView = () => {
+                switch (currentView) {
+                    case 'home':
+                        return <Homepage setCurrentView={setCurrentView} />;
+                    case 'submit':
+                        return <ProjectSubmissionForm setCurrentView={setCurrentView} />;
+                    case 'login':
+                        return <HiringManagerLogin setCurrentView={setCurrentView} setUser={setUser} />;
+                    case 'dashboard':
+                        return user ? (
+                            <Dashboard 
+                                user={user}
+                                setCurrentView={setCurrentView} 
+                                setSelectedProject={setSelectedProject}
+                                setActiveChat={setActiveChat}
+                            />
+                        ) : (
+                            <HiringManagerLogin setCurrentView={setCurrentView} setUser={setUser} />
+                        );
+                    case 'details':
+                        return selectedProject && user ? (
+                            <ProjectDetails 
+                                project={selectedProject}
+                                user={user}
+                                setCurrentView={setCurrentView}
+                                setActiveChat={setActiveChat}
+                            />
+                        ) : (
+                            <Dashboard 
+                                user={user}
+                                setCurrentView={setCurrentView} 
+                                setSelectedProject={setSelectedProject}
+                                setActiveChat={setActiveChat}
+                            />
+                        );
+                    case 'chat':
+                        return activeChat && user ? (
+                            <Chat 
+                                project={activeChat}
+                                user={user}
+                                setCurrentView={setCurrentView}
+                            />
+                        ) : (
+                            <Dashboard 
+                                user={user}
+                                setCurrentView={setCurrentView} 
+                                setSelectedProject={setSelectedProject}
+                                setActiveChat={setActiveChat}
+                            />
+                        );
+                    default:
+                        return <Homepage setCurrentView={setCurrentView} />;
+                }
+            };
+
+            return (
+                <div className="min-h-screen bg-gray-50">
+                    <Navigation 
+                        currentView={currentView} 
+                        setCurrentView={setCurrentView}
+                        user={user}
+                        setUser={setUser}
+                    />
+                    <main>
+                        {renderCurrentView()}
+                    </main>
+                    <Footer />
+                </div>
+            );
+        };
+
+        // Render the app
+        ReactDOM.render(<App />, document.getElementById('root'));
+    </script>
+</body>
+</html>
